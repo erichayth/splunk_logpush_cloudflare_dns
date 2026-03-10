@@ -1,0 +1,204 @@
+================================================================================
+  zone_dns_logpush_v3.ps1 - Cloudflare DNS Logpush to Splunk HEC (PowerShell)
+================================================================================
+
+Author:       Eric Hayth | ehayth@cloudflare.com
+Version:      2.0.0
+Date:         2026-03-10
+Language:     PowerShell 5.1+ / PowerShell Core 7+
+License:      Free to use, copy, and modify. Provided as-is, no warranty.
+
+================================================================================
+  DESCRIPTION
+================================================================================
+
+This script automates the creation and enablement of Cloudflare Logpush jobs
+for DNS logs, pushing to a Splunk HTTP Event Collector (HEC) endpoint over
+SSL (default port 8088).
+
+It reads a list of zone (domain) names from a text file, resolves each to its
+Cloudflare Zone ID, creates a Logpush job targeting the Splunk HEC endpoint,
+and enables the job.
+
+This is the PowerShell equivalent of zone_dns_logpush_v3.py.
+
+================================================================================
+  PREREQUISITES
+================================================================================
+
+1. PowerShell 5.1 (Windows) or PowerShell Core 7+ (Windows/macOS/Linux)
+2. No external modules required (uses built-in Invoke-RestMethod)
+3. A Cloudflare API Token with the following permissions:
+       - Zone > Logs > Edit
+       - Zone > Zone > Read
+4. A Splunk HEC endpoint configured to accept data over SSL (port 8088)
+5. A Splunk HEC Token
+6. A Splunk HEC Channel ID (UUID format)
+7. A text file containing one zone name per line
+
+================================================================================
+  USAGE
+================================================================================
+
+    .\zone_dns_logpush_v3.ps1
+
+Or from a PowerShell prompt:
+
+    powershell -ExecutionPolicy Bypass -File zone_dns_logpush_v3.ps1
+
+The script will prompt for the following inputs:
+
+    Prompt                                          Example Value
+    ----------------------------------------------- ----------------------------
+    Enter Cloudflare API Token                      (SecureString, hidden input)
+    Enter Splunk HEC hostname or IP                 splunk.example.com
+    Enter Splunk HEC port [8088]                    8088
+    Enter Splunk HEC Token                          (SecureString, hidden input)
+    Enter Splunk sourcetype [cloudflare:dns]        cloudflare:dns
+    Enter Splunk HEC Channel ID (UUID)              550e8400-e29b-41d4-a716-446655440000
+    Allow insecure (skip TLS verification)? [y/N]   N
+    Enter the path to a text file ...               .\zones.txt
+
+================================================================================
+  ZONES FILE FORMAT
+================================================================================
+
+A plain text file with one zone (domain) name per line. Blank lines are ignored.
+
+Example (zones.txt):
+
+    example.com
+    example.org
+    mysite.net
+
+================================================================================
+  FUNCTIONS
+================================================================================
+
+The script is organized into four functions:
+
+    Function             Description
+    -------------------- -----------------------------------------------
+    Read-Zones           Reads and returns zone names from a text file.
+                         Validates that the file exists before reading.
+
+    Get-ZoneId           Queries the Cloudflare API to resolve a zone
+                         name to its Zone ID. Returns $null if not found.
+
+    New-LogpushJob       Creates a new Logpush job for DNS logs targeting
+                         the Splunk HEC endpoint. Returns the job ID.
+
+    Enable-LogpushJob    Enables an existing Logpush job by ID. Returns
+                         $true on success, $false otherwise.
+
+================================================================================
+  DNS LOG FIELDS
+================================================================================
+
+The following DNS log fields are included in the Logpush job:
+
+    Field                Description
+    -------------------- -----------------------------------------------
+    ColoCode             IATA code of the Cloudflare data center
+    EDNSSubnet           EDNS Client Subnet (ECS) if present
+    EDNSSubnetLength     Prefix length of the EDNS Client Subnet
+    QueryName            The queried domain name
+    QueryType            DNS query type (A, AAAA, CNAME, MX, etc.)
+    ResponseCached       Whether the response was served from cache
+    ResponseCode         DNS response code (NOERROR, NXDOMAIN, etc.)
+    SourceIP             IP address of the DNS client
+    Timestamp            Timestamp of the query in RFC 3339 format
+
+================================================================================
+  SPLUNK DESTINATION FORMAT
+================================================================================
+
+The script constructs the following destination_conf string for each job:
+
+    splunk://<HOST>:<PORT>/services/collector/raw
+        ?channel=<CHANNEL_ID>
+        &insecure=<true|false>
+        &sourcetype=<SOURCE_TYPE>
+        &header_Authorization=Splunk%20<HEC_TOKEN>
+
+The HEC token is URL-encoded using [System.Uri]::EscapeDataString().
+
+================================================================================
+  ERROR HANDLING
+================================================================================
+
+- If a zone name cannot be found via the Cloudflare API, a warning is displayed
+  and processing continues to the next zone.
+- API errors are caught per-zone using try/catch. The error message and API
+  response body (if available) are printed via Write-Error.
+- A 2-second delay (Start-Sleep) between zones helps avoid API rate limits.
+- The zones file path is validated before processing begins. If the file does
+  not exist, the script exits with an error.
+
+================================================================================
+  CONSOLE OUTPUT
+================================================================================
+
+The script uses color-coded console output:
+
+    Color    Meaning
+    -------- -----------------------------------------------
+    Cyan     Processing status (current zone being processed)
+    Green    Success messages (job enabled, completion)
+    Yellow   Warnings (zone not found, job creation issues)
+    Red      Errors (API failures, unexpected exceptions)
+
+================================================================================
+  EXAMPLE OUTPUT
+================================================================================
+
+    Enter Cloudflare API Token: ********
+    Enter Splunk HEC hostname or IP (e.g. splunk.example.com): splunk.corp.com
+    Enter Splunk HEC port [8088]:
+    Enter Splunk HEC Token: ********
+    Enter Splunk sourcetype [cloudflare:dns]:
+    Enter Splunk HEC Channel ID (UUID): 550e8400-e29b-41d4-a716-446655440000
+    Allow insecure (skip TLS verification)? [y/N]: N
+    Enter the path to a text file containing the list of zones by name: zones.txt
+    Processing zone: example.com
+    Logpush job enabled for Zone: example.com (ID: abc123), Job ID: 45678
+    Processing zone: example.org
+    Logpush job enabled for Zone: example.org (ID: def456), Job ID: 45679
+    Processing zone: nonexistent.com
+    WARNING: No zone found for the domain name: nonexistent.com
+    Done.
+
+================================================================================
+  SECURITY NOTES
+================================================================================
+
+- The Cloudflare API token is collected using Read-Host -AsSecureString so it
+  is never displayed in the terminal or stored as plain text in memory longer
+  than necessary.
+- The Splunk HEC token is also collected as a SecureString.
+- Both are converted to plain text only when needed for API calls and are
+  scoped to the script's execution lifetime.
+- Set "insecure" to "y" only if your Splunk endpoint uses a self-signed
+  certificate. For production environments, this should remain "N".
+
+================================================================================
+  DIFFERENCES FROM PYTHON VERSION
+================================================================================
+
+    Aspect               Python (v3.py)            PowerShell (v3.ps1)
+    -------------------- ------------------------- -------------------------
+    HTTP Client          requests library          Invoke-RestMethod (built-in)
+    Secret Input         getpass()                 Read-Host -AsSecureString
+    URL Encoding         urllib.parse.quote()      [System.Uri]::EscapeDataString()
+    Console Output       print()                   Write-Host with colors
+    Error Handling       try/except                try/catch
+    Dependencies         pip install requests      None (built-in cmdlets)
+
+================================================================================
+  NOTES
+================================================================================
+
+- The job name follows the pattern: <zone_name>-dns-splunk
+- Each job is created and then enabled in a separate API call.
+- Compatible with both Windows PowerShell 5.1 and PowerShell Core 7+.
+- On macOS/Linux, run with: pwsh zone_dns_logpush_v3.ps1
